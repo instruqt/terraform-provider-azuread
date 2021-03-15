@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/Azure/azure-sdk-for-go/services/graphrbac/1.6/graphrbac"
 	"github.com/hashicorp/go-azure-helpers/response"
@@ -74,6 +75,20 @@ func servicePrincipalResource() *schema.Resource {
 	}
 }
 
+func retryForServicePrincipal(attempts int, sleep time.Duration, fn func() (graphrbac.ServicePrincipal, error)) (graphrbac.ServicePrincipal, error) {
+	if sp, err := fn(); err != nil {
+		if attempts--; attempts > 0 {
+			time.Sleep(sleep)
+			log.Printf("[DEBUG] Going to retry for attempt %#v", attempts)
+			return retryForServicePrincipal(attempts, 2*sleep, fn)
+		}
+		return graphrbac.ServicePrincipal{}, err
+	} else {
+		log.Printf("[DEBUG] Attempt successfull with attempts left: %#v", attempts)
+		return sp, err
+	}
+}
+
 func servicePrincipalResourceCreate(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
 	client := meta.(*clients.Client).ServicePrincipals.AadClient
 
@@ -94,7 +109,10 @@ func servicePrincipalResourceCreate(ctx context.Context, d *schema.ResourceData,
 		properties.Tags = tf.ExpandStringSlicePtr(v.(*schema.Set).List())
 	}
 
-	sp, err := client.Create(ctx, properties)
+	log.Println("[DEBUG] Creating service principal")
+	sp, err := retryForServicePrincipal(5, time.Second*3, func() (graphrbac.ServicePrincipal, error) {
+		return client.Create(ctx, properties)
+	})
 	if err != nil {
 		return tf.ErrorDiagF(err, "Could not create service principal")
 	}
